@@ -178,18 +178,17 @@ def load_scraped_data(csv_path=CSV_FILE_PATH):
     return scraped
 
 
-def save_scraped_data(data, filename=CSV_FILE_PATH):
-    if not data:
+def save_scraped_data_batch(data_batch, filename=CSV_FILE_PATH, write_header=False):
+    if not data_batch:
         return
-    try:
-        with open(filename, 'w', newline='', encoding='utf-8') as f:
-            keys = data[0].keys()
-            writer = csv.DictWriter(f, fieldnames=keys)
+    mode = 'a'  # append mode
+    with open(filename, mode, newline='', encoding='utf-8') as f:
+        keys = data_batch[0].keys()
+        writer = csv.DictWriter(f, fieldnames=keys)
+        if write_header:
             writer.writeheader()
-            writer.writerows(data)
-        print(f"Saved {len(data)} cards to {filename}")
-    except Exception as e:
-        print(f"Error saving data: {e}")
+        writer.writerows(data_batch)
+    print(f"Saved {len(data_batch)} cards to {filename}")
 
 
 def compare_price_changes(old_data, new_data):
@@ -234,29 +233,32 @@ def main():
         card_urls = get_card_urls_from_set(driver, set_url)
         all_card_urls.extend(card_urls)
 
-    # Remove duplicates
     all_card_urls = list(set(all_card_urls))
     print(f"Total cards found across all sets: {len(all_card_urls)}")
 
-    scraped_results = []
+    batch_size = 25
+    buffer = []
+    first_write = True  # to write header only once
+
     for url in all_card_urls:
         if url in scraped_data:
             print(f"Skipping already scraped card: {url}")
-            scraped_results.append(scraped_data[url])
-            continue
+            buffer.append(scraped_data[url])
+        else:
+            print(f"Scraping card: {url}")
+            card_info = scrape_card_data(driver, url)
+            if card_info:
+                buffer.append(card_info)
+            time.sleep(random.uniform(*REQUEST_DELAY))
 
-        print(f"Scraping card: {url}")
-        card_info = scrape_card_data(driver, url)
-        if card_info:
-            scraped_results.append(card_info)
-        time.sleep(random.uniform(*REQUEST_DELAY))
+        if len(buffer) >= batch_size:
+            save_scraped_data_batch(buffer, write_header=first_write)
+            first_write = False
+            buffer.clear()
 
-    # Save all scraped data
-    save_scraped_data(scraped_results)
-
-    # Compare with old data to find price changes
-    price_changes = compare_price_changes(scraped_data, scraped_results)
-    # You can save price_changes or process further as needed
+    # Save remaining cards in buffer
+    if buffer:
+        save_scraped_data_batch(buffer, write_header=first_write)
 
     driver.quit()
 
