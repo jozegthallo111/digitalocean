@@ -138,7 +138,6 @@ def scrape_card_data(driver, card_url):
             except NoSuchElementException:
                 pass
 
-            # Pad prices and volumes to at least 6 entries (Raw, Grade 7, Grade 8, Grade 9, Grade 9.5, PSA 10)
             while len(prices) < 6:
                 prices.append("N/A")
             while len(volumes) < 6:
@@ -191,7 +190,7 @@ def load_scraped_data(csv_path=CSV_FILE_PATH):
 def save_scraped_data_batch(data_batch, filename=CSV_FILE_PATH, write_header=False):
     if not data_batch:
         return
-    mode = 'a'  # append mode
+    mode = 'a'
     with open(filename, mode, newline='', encoding='utf-8') as f:
         keys = data_batch[0].keys()
         writer = csv.DictWriter(f, fieldnames=keys)
@@ -236,5 +235,28 @@ def compare_price_changes(old_data, new_data):
 def main():
     driver = create_driver()
     scraped_data = load_scraped_data()
+    all_sets = get_all_set_urls(driver)
+    random.shuffle(all_sets)
 
-    all_sets = get_all_set
+    write_header = not os.path.exists(CSV_FILE_PATH)
+    for set_url in all_sets:
+        card_urls = get_card_urls_from_set(driver, set_url)
+        batch = []
+        for card_url in card_urls:
+            if card_url in scraped_data:
+                print(f"Already scraped {card_url}, skipping.")
+                continue
+            card_data = scrape_card_data(driver, card_url)
+            if card_data:
+                batch.append(card_data)
+                scraped_data[card_url] = card_data
+                time.sleep(random.uniform(*REQUEST_DELAY))
+        if batch:
+            save_scraped_data_batch(batch, write_header=write_header)
+            write_header = False
+
+    driver.quit()
+
+
+if __name__ == "__main__":
+    main()
