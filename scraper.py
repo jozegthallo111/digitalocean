@@ -9,7 +9,7 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import NoSuchElementException
+from selenium.common.exceptions import NoSuchElementException, InvalidSessionIdException
 from webdriver_manager.chrome import ChromeDriverManager
 
 # Your API keys (embedded as per your request)
@@ -86,11 +86,16 @@ def get_card_urls_from_set(driver, set_url):
             urls = list({link.get_attribute("href") for link in card_links if link.get_attribute("href")})
             print(f"Found {len(urls)} cards in set {set_url.split('/')[-1]}")
             return urls
+        except InvalidSessionIdException:
+            print("Invalid session detected during set URL fetch. Recreating driver...")
+            driver.quit()
+            driver = create_driver()
         except Exception as e:
             print(f"Attempt {attempt + 1} failed for {set_url}: {str(e)}")
             if attempt == MAX_RETRIES - 1:
                 return []
             time.sleep(5)
+    return []
 
 
 def scrape_card_data(driver, card_url):
@@ -159,11 +164,16 @@ def scrape_card_data(driver, card_url):
                 "Card URL": card_url,
             }
 
+        except InvalidSessionIdException:
+            print("Invalid session detected during card scrape. Recreating driver...")
+            driver.quit()
+            driver = create_driver()
         except Exception as e:
             print(f"Attempt {attempt + 1} failed for {card_url}: {str(e)}")
             if attempt == MAX_RETRIES - 1:
                 return None
             time.sleep(5)
+    return None
 
 
 def load_scraped_data(csv_path=CSV_FILE_PATH):
@@ -227,41 +237,4 @@ def main():
     driver = create_driver()
     scraped_data = load_scraped_data()
 
-    all_sets = get_all_set_urls(driver)
-    all_card_urls = []
-    for set_url in all_sets:
-        card_urls = get_card_urls_from_set(driver, set_url)
-        all_card_urls.extend(card_urls)
-
-    all_card_urls = list(set(all_card_urls))
-    print(f"Total cards found across all sets: {len(all_card_urls)}")
-
-    batch_size = 25
-    buffer = []
-    first_write = True  # to write header only once
-
-    for url in all_card_urls:
-        if url in scraped_data:
-            print(f"Skipping already scraped card: {url}")
-            buffer.append(scraped_data[url])
-        else:
-            print(f"Scraping card: {url}")
-            card_info = scrape_card_data(driver, url)
-            if card_info:
-                buffer.append(card_info)
-            time.sleep(random.uniform(*REQUEST_DELAY))
-
-        if len(buffer) >= batch_size:
-            save_scraped_data_batch(buffer, write_header=first_write)
-            first_write = False
-            buffer.clear()
-
-    # Save remaining cards in buffer
-    if buffer:
-        save_scraped_data_batch(buffer, write_header=first_write)
-
-    driver.quit()
-
-
-if __name__ == "__main__":
-    main()
+    all_sets = get_all_set
