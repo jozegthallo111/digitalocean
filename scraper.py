@@ -1,27 +1,38 @@
 import os
 import time
-import random
 import csv
+import random
 import requests
+from datetime import datetime
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import NoSuchElementException, InvalidSessionIdException
+from selenium.common.exceptions import NoSuchElementException
 from webdriver_manager.chrome import ChromeDriverManager
+from tqdm import tqdm
+from dotenv import load_dotenv
 
-# Your API keys (embedded as per your request)
-OPENAI_API_KEY = "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"
-SERPAPI_API_KEY = "0a7c2fc610f1e0b9fcf241cb43f4cb2b2984ac911f0af69775adade602223cc6"
+load_dotenv()
 
-START_URL = "https://www.pricecharting.com/category/pokemon-cards"
+OPENAI_API_KEY = os.getenv("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")
+SERPAPI_API_KEY = os.getenv("0a7c2fc610f1e0b9fcf241cb43f4cb2b2984ac911f0af69775adade602223cc6")
+
+START_URL = "https://www.pricecharting.com/category/yugioh-cards"
 WAIT_TIMEOUT = 25
 MAX_RETRIES = 3
 REQUEST_DELAY = (2, 5)
-CSV_FILE_PATH = "pokemon_cards.csv"
+SAVE_EVERY = 25
+CSV_FILE_PATH = "yugioh_cards.csv"
+PREVIOUS_CSV_PATH = "yugioh_cards_previous.csv"
+BLOGS_OUTPUT_DIR = "blogs"
+IMAGES_DIR = "blog_images"
+MIN_OPENAI_CALLS = 15
+MIN_SERPAPI_CALLS = 10
 
+os.makedirs(BLOGS_OUTPUT_DIR, exist_ok=True)
 
 def create_driver():
     options = Options()
@@ -33,9 +44,7 @@ def create_driver():
     prefs = {"profile.managed_default_content_settings.images": 2}
     options.add_experimental_option("prefs", prefs)
     service = Service(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=options)
-    return driver
-
+    return webdriver.Chrome(service=service, options=options)
 
 def slow_scroll(driver):
     last_height = driver.execute_script("return document.body.scrollHeight")
@@ -52,7 +61,6 @@ def slow_scroll(driver):
             scroll_attempts = 0
             last_height = new_height
 
-
 def get_all_set_urls(driver):
     driver.get(START_URL)
     time.sleep(random.uniform(*REQUEST_DELAY))
@@ -61,17 +69,8 @@ def get_all_set_urls(driver):
     )
     slow_scroll(driver)
     set_links = driver.find_elements(By.CSS_SELECTOR, "a[href*='/console/']")
-
-    urls = []
-    for link in set_links:
-        url = link.get_attribute("href")
-        name = link.text.strip().lower()
-        if "pokemon" in url.lower() or "pokemon" in name:
-            urls.append(url)
-    urls = list(set(urls))
-    print(f"Found {len(urls)} Pokémon sets")
-    return urls
-
+    urls = [link.get_attribute("href") for link in set_links if "yugioh" in link.get_attribute("href").lower()]
+    return list(set(urls))
 
 def get_card_urls_from_set(driver, set_url):
     for attempt in range(MAX_RETRIES):
@@ -83,20 +82,11 @@ def get_card_urls_from_set(driver, set_url):
             )
             slow_scroll(driver)
             card_links = driver.find_elements(By.CSS_SELECTOR, "td.title a")
-            urls = list({link.get_attribute("href") for link in card_links if link.get_attribute("href")})
-            print(f"Found {len(urls)} cards in set {set_url.split('/')[-1]}")
-            return urls
-        except InvalidSessionIdException:
-            print("Invalid session detected during set URL fetch. Recreating driver...")
-            driver.quit()
-            driver = create_driver()
+            return list({link.get_attribute("href") for link in card_links})
         except Exception as e:
             print(f"Attempt {attempt + 1} failed for {set_url}: {str(e)}")
-            if attempt == MAX_RETRIES - 1:
-                return []
             time.sleep(5)
     return []
-
 
 def scrape_card_data(driver, card_url):
     for attempt in range(MAX_RETRIES):
@@ -106,17 +96,8 @@ def scrape_card_data(driver, card_url):
                 EC.presence_of_element_located((By.CSS_SELECTOR, "h1#product_name"))
             )
             name = driver.find_element(By.CSS_SELECTOR, "h1#product_name").text.strip()
-
-            prices = []
-            volumes = []
-
-            price_elements = driver.find_elements(By.CSS_SELECTOR, "span.price.js-price")
-            for elem in price_elements:
-                prices.append(elem.text.strip())
-
-            volume_elements = driver.find_elements(By.CSS_SELECTOR, "td.js-show-tab")
-            for elem in volume_elements:
-                volumes.append(elem.text.replace("volume:", "").strip())
+            prices = [elem.text.strip() for elem in driver.find_elements(By.CSS_SELECTOR, "span.price.js-price")]
+            volumes = [elem.text.replace("volume:", "").strip() for elem in driver.find_elements(By.CSS_SELECTOR, "td.js-show-tab")]
 
             rarity = "N/A"
             model_number = "N/A"
@@ -162,43 +143,24 @@ def scrape_card_data(driver, card_url):
                 "Image URL": img_url,
                 "Card URL": card_url,
             }
-
-        except InvalidSessionIdException:
-            print("Invalid session detected during card scrape. Recreating driver...")
-            driver.quit()
-            driver = create_driver()
         except Exception as e:
             print(f"Attempt {attempt + 1} failed for {card_url}: {str(e)}")
-            if attempt == MAX_RETRIES - 1:
-                return None
             time.sleep(5)
     return None
 
-
 def load_scraped_data(csv_path=CSV_FILE_PATH):
-    scraped = {}
-    if os.path.exists(csv_path):
-        with open(csv_path, newline='', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                url = row.get("Card URL", "").strip()
-                if url:
-                    scraped[url] = row
-    return scraped
+    if not os.path.exists(csv_path):
+        return {}
+    with open(csv_path, newline='', encoding='utf-8') as f:
+        return {row["Card URL"]: row for row in csv.DictReader(f)}
 
-
-def save_scraped_data_batch(data_batch, filename=CSV_FILE_PATH, write_header=False):
-    if not data_batch:
+def save_scraped_data(data, filename=CSV_FILE_PATH):
+    if not data:
         return
-    mode = 'a'
-    with open(filename, mode, newline='', encoding='utf-8') as f:
-        keys = data_batch[0].keys()
-        writer = csv.DictWriter(f, fieldnames=keys)
-        if write_header:
-            writer.writeheader()
-        writer.writerows(data_batch)
-    print(f"Saved {len(data_batch)} cards to {filename}")
-
+    with open(filename, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=data[0].keys())
+        writer.writeheader()
+        writer.writerows(data)
 
 def compare_price_changes(old_data, new_data):
     changes = []
@@ -208,55 +170,67 @@ def compare_price_changes(old_data, new_data):
         if not old_card:
             changes.append({**card, "Price Change": "New Card"})
             continue
-
-        price_fields = ["Raw Price", "Grade 7", "Grade 8", "Grade 9", "Grade 9.5", "PSA 10"]
         diffs = []
-        for field in price_fields:
-            old_price_str = old_card.get(field, "N/A").replace("$", "").replace(",", "")
-            new_price_str = card.get(field, "N/A").replace("$", "").replace(",", "")
+        for field in ["Raw Price", "Grade 7", "Grade 8", "Grade 9", "Grade 9.5", "PSA 10"]:
             try:
-                old_price = float(old_price_str)
+                old_val = float(old_card[field].replace("$", "").replace(",", ""))
+                new_val = float(card[field].replace("$", "").replace(",", ""))
+                diffs.append(f"{field}: {new_val - old_val:+.2f}")
             except:
-                old_price = None
-            try:
-                new_price = float(new_price_str)
-            except:
-                new_price = None
-            if old_price is not None and new_price is not None:
-                diff = new_price - old_price
-                diffs.append(f"{field}: {diff:+.2f}")
-            else:
                 diffs.append(f"{field}: N/A")
-
         changes.append({**card, "Price Change": "; ".join(diffs)})
     return changes
 
+def generate_blog_content(cards, blog_num, timestamp):
+    import openai
+    openai.api_key = OPENAI_API_KEY
+    prompt_cards = "\n".join(
+        [f"{i+1}. {c['Name']} - Current Price: {c['Raw Price']} - Change: {c['Price Change']}" for i, c in enumerate(cards)]
+    )
+    prompt = (
+        f"Write a Yu-Gi-Oh! card market update blog post #{blog_num} for {timestamp.strftime('%Y-%m-%d')}\n"
+        f"Cards:\n{prompt_cards}\n"
+        "Include rarity insights and collector tips."
+    )
+    response = openai.ChatCompletion.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": prompt}],
+        max_tokens=700,
+        temperature=0.7,
+    )
+    return response['choices'][0]['message']['content'].strip()
 
 def main():
     driver = create_driver()
-    scraped_data = load_scraped_data()
-    all_sets = get_all_set_urls(driver)
-    random.shuffle(all_sets)
+    all_data = []
+    try:
+        old_data_dict = load_scraped_data(CSV_FILE_PATH)
+        set_urls = get_all_set_urls(driver)
 
-    write_header = not os.path.exists(CSV_FILE_PATH)
-    for set_url in all_sets:
-        card_urls = get_card_urls_from_set(driver, set_url)
-        batch = []
-        for card_url in card_urls:
-            if card_url in scraped_data:
-                print(f"Already scraped {card_url}, skipping.")
+        for set_url in set_urls:
+            card_urls = get_card_urls_from_set(driver, set_url)
+            if not card_urls:
                 continue
-            card_data = scrape_card_data(driver, card_url)
-            if card_data:
-                batch.append(card_data)
-                scraped_data[card_url] = card_data
+            for card_url in tqdm(card_urls, desc=f"Scraping {set_url.split('/')[-1]}", unit="card"):
+                card_data = scrape_card_data(driver, card_url)
+                if card_data:
+                    all_data.append(card_data)
                 time.sleep(random.uniform(*REQUEST_DELAY))
-        if batch:
-            save_scraped_data_batch(batch, write_header=write_header)
-            write_header = False
 
-    driver.quit()
+        save_scraped_data(all_data)
+        changes = compare_price_changes(old_data_dict, all_data)
 
+        cards_per_blog = max(1, len(changes) // 5)
+        for i in range(5):
+            start = i * cards_per_blog
+            end = start + cards_per_blog if i < 4 else len(changes)
+            blog_cards = changes[start:end]
+            content = generate_blog_content(blog_cards, i+1, datetime.now())
+            with open(f"{BLOGS_OUTPUT_DIR}/yugioh_blog_{i+1}.md", "w", encoding="utf-8") as f:
+                f.write(content)
+
+    finally:
+        driver.quit()
 
 if __name__ == "__main__":
     main()
